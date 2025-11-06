@@ -1,69 +1,80 @@
 #include <AFMotor.h>
 #include <Ultrasonic.h>
 
-// Pins
-#define TRIGGER A0
-#define ECHO    A1
-#define SENSOR_LINHA   A5  // único sensor infravermelho
+// ------------------ PINOS ------------------
+#define TRIGGER A0  
+#define ECHO    A1  
+#define SENSOR_FRENTE A5  // Único sensor infravermelho
 
-// Velocidades
+// ------------------ VELOCIDADES ------------------
 #define VEL_BUSCA   180
 #define VEL_ATAQUE  255
 #define VEL_MANOBRA 180
-#define VEL_GIRO    200
+#define VEL_GIRO    150  // Aumentado para compensar apenas 2 motores
 
-// Tempos
-#define TEMPO_RECUO   600
-#define TEMPO_AVANCO  600
+// ------------------ TEMPOS ------------------
 #define TEMPO_GIRO    300
-#define DEBOUNCE_TEMPO 50
-#define TEMPO_PAUSA_ULTRA 500
+#define TEMPO_GIRO_180  1800  // Ajustado para 2 motores
+#define TEMPO_RECUO   700
+#define TEMPO_AVANCO  700
+#define DEBOUNCE_TEMPO 50  
+#define TEMPO_PAUSA_ULTRA 200
 
-// Objetos
-AF_DCMotor motor1(1); // esquerda
-AF_DCMotor motor2(2); // direita
+// ------------------ OBJETOS ------------------
+AF_DCMotor motorEsquerdo(1);  // M1 - Motor esquerdo (INVERTIDO)
+AF_DCMotor motorDireito(2);   // M2 - Motor direito
 Ultrasonic ultrasonic(TRIGGER, ECHO);
 
-// Variáveis
+// ------------------ VARIÁVEIS ------------------
 unsigned long ultimoTempo = 0;
 unsigned long pausaUltrassomAte = 0;
-unsigned long ultimoDebounceLinha = 0;
-int ultimoSensorLinha = LOW;
+unsigned long ultimoDebounceFrente = 0;
 
-enum Estado {
-  PROCURANDO,
-  ATACANDO,
-  RECUANDO,
-  AVANCANDO,
-  PARADO
+int ultimoSensorFrente = LOW;
+
+bool sentidoGiro = true;  // alterna direção de busca (true=direita, false=esquerda)
+int contadorAtaquesFrontais = 0;
+
+enum Estado { 
+  PROCURANDO, 
+  ATACANDO, 
+  RECUANDO, 
+  AVANCANDO, 
+  PARADO 
 };
 Estado estadoAtual = PROCURANDO;
 
+// ------------------ SETUP ------------------
 void setup() {
   Serial.begin(9600);
-  Serial.println("=== Robo Sumo - 2 motores / 1 sensor ===");
+  Serial.println("=== Robô Sumô 2 Motores - Arena Branca ===");
 
-  motor1.setSpeed(VEL_BUSCA);
-  motor2.setSpeed(VEL_BUSCA);
+  motorEsquerdo.setSpeed(VEL_BUSCA);
+  motorDireito.setSpeed(VEL_BUSCA);
 
   pinMode(TRIGGER, OUTPUT);
   pinMode(ECHO, INPUT);
-  pinMode(SENSOR_LINHA, INPUT_PULLUP);
+  pinMode(SENSOR_FRENTE, INPUT_PULLUP);
 
   Serial.println("Inicializado!");
+  delay(1000);
 }
 
+// ------------------ LOOP PRINCIPAL ------------------
 void loop() {
-  int sensorLinha = lerSensorLinhaDigital(SENSOR_LINHA, ultimoSensorLinha, ultimoDebounceLinha);
+  int sFrente = lerSensorLinhaDigital(SENSOR_FRENTE, ultimoSensorFrente, ultimoDebounceFrente);
+
   float dist;
 
   // Pausa ultrassom ao detectar borda
-  if (sensorLinha == HIGH) {
+  if (sFrente == HIGH) {
     pausaUltrassomAte = millis() + TEMPO_PAUSA_ULTRA;
     dist = 400;
-  } else if (millis() < pausaUltrassomAte) {
+  } 
+  else if (millis() < pausaUltrassomAte) {
     dist = 400;
-  } else {
+  } 
+  else {
     dist = ultrasonic.read();
     if (dist <= 0 || dist > 400) {
       dist = readUltrasonicCM(TRIGGER, ECHO);
@@ -72,30 +83,34 @@ void loop() {
   }
 
   Serial.print("Dist: "); Serial.print(dist);
-  Serial.print(" cm | Linha: "); Serial.print(sensorLinha);
+  Serial.print(" cm | Frente: "); Serial.print(sFrente);
   Serial.print(" | Estado: "); Serial.println(estadoAtual);
 
-  // Prioridade: sensor de linha
-  if (sensorLinha == HIGH) {
+  // PRIORIDADE MÁXIMA: sensor de linha (borda preta)
+  if (sFrente == HIGH) {
     Serial.println("!!! BORDA DETECTADA !!!");
     mudarEstado(RECUANDO);
-    executarEstado(dist, sensorLinha);
+    executarEstado(dist, sFrente);
     return;
   }
 
-  // Detecção doponente
-  if (dist <= 40 && dist > 0) {
-    mudarEstado(ATACANDO);
-  } else if (estadoAtual != RECUANDO && estadoAtual != AVANCANDO) {
+  // Detecção do oponente
+  if (dist <= 60 && dist > 0) {
+    if (estadoAtual != ATACANDO) {
+      mudarEstado(ATACANDO);
+    }
+  } 
+  else if (estadoAtual != RECUANDO && estadoAtual != AVANCANDO) {
     mudarEstado(PROCURANDO);
   }
 
-  executarEstado(dist, sensorLinha);
+  executarEstado(dist, sFrente);
 }
 
-// ------------------- FUNÇÕES -------------------
+// ------------------ LEITURA SENSOR LINHA DIGITAL COM DEBOUNCE ------------------
 int lerSensorLinhaDigital(int pino, int &ultimoEstado, unsigned long &ultimoDebounce) {
   int leituraAtual = digitalRead(pino);
+
   if (leituraAtual != ultimoEstado) {
     if (millis() - ultimoDebounce > DEBOUNCE_TEMPO) {
       ultimoEstado = leituraAtual;
@@ -107,6 +122,7 @@ int lerSensorLinhaDigital(int pino, int &ultimoEstado, unsigned long &ultimoDebo
   return ultimoEstado;
 }
 
+// ------------------ CONTROLE DE ESTADOS ------------------
 void mudarEstado(Estado novo) {
   if (estadoAtual != novo) {
     estadoAtual = novo;
@@ -115,60 +131,77 @@ void mudarEstado(Estado novo) {
   }
 }
 
-void executarEstado(float dist, int sensorLinha) {
+void executarEstado(float dist, int sf) {
   switch (estadoAtual) {
     case PROCURANDO: procura(); break;
-    case ATACANDO: ataque(dist, sensorLinha); break;
-    case RECUANDO: recuar(sensorLinha); break;
-    case AVANCANDO: avancar(sensorLinha); break;
+    case ATACANDO: ataque(dist, sf); break;
+    case RECUANDO: recuar(sf); break;
+    case AVANCANDO: avancar(sf); break;
     case PARADO: parada(); break;
   }
 }
 
+// ------------------ MOVIMENTOS BÁSICOS ------------------
+// ATENÇÃO: M1 está invertido (FORWARD vai para trás, BACKWARD vai para frente)
+
 void frente(int vel = VEL_BUSCA) {
-  motor1.setSpeed(vel);
-  motor2.setSpeed(vel);
-  motor1.run(BACKWARD);
-  motor2.run(BACKWARD);
+  motorEsquerdo.setSpeed(vel);
+  motorDireito.setSpeed(vel);
+  motorEsquerdo.run(BACKWARD);  // INVERTIDO: usa BACKWARD para ir frente
+  motorDireito.run(FORWARD);
 }
 
 void tras(int vel = VEL_MANOBRA) {
-  motor1.setSpeed(vel);
-  motor2.setSpeed(vel);
-  motor1.run(FORWARD);
-  motor2.run(FORWARD);
+  motorEsquerdo.setSpeed(vel);
+  motorDireito.setSpeed(vel);
+  motorEsquerdo.run(FORWARD);   // INVERTIDO: usa FORWARD para ir trás
+  motorDireito.run(BACKWARD);
 }
 
 void esquerda(int vel = VEL_GIRO) {
-  motor1.setSpeed(vel);
-  motor2.setSpeed(vel);
-  motor1.run(FORWARD);
-  motor2.run(BACKWARD);
+  motorEsquerdo.setSpeed(vel);
+  motorDireito.setSpeed(vel);
+  motorEsquerdo.run(FORWARD);   // INVERTIDO: gira no próprio eixo
+  motorDireito.run(FORWARD);
 }
 
 void direita(int vel = VEL_GIRO) {
-  motor1.setSpeed(vel);
-  motor2.setSpeed(vel);
-  motor1.run(BACKWARD);
-  motor2.run(FORWARD);
+  motorEsquerdo.setSpeed(vel);
+  motorDireito.setSpeed(vel);
+  motorEsquerdo.run(BACKWARD);  // INVERTIDO: gira no próprio eixo
+  motorDireito.run(BACKWARD);
 }
 
 void parada() {
-  motor1.run(RELEASE);
-  motor2.run(RELEASE);
+  motorEsquerdo.run(RELEASE);
+  motorDireito.run(RELEASE);
 }
 
+// ------------------ AÇÕES ESTRATÉGICAS ------------------
+
 void procura() {
-  // Alterna busca esquerda/direita
-  if ((millis() / 2000) % 2 == 0) {
-    esquerda(VEL_GIRO);
+  // Gira alternando direções para cobrir área
+  unsigned long tempoDecorrido = millis() - ultimoTempo;
+  
+  if (tempoDecorrido < 2000) {
+    // Gira em uma direção por 2 segundos
+    if (sentidoGiro) {
+      direita(VEL_GIRO);
+    } else {
+      esquerda(VEL_GIRO);
+    }
+  } else if (tempoDecorrido < 2500) {
+    // Pequeno avanço
+    frente(VEL_BUSCA);
   } else {
-    direita(VEL_GIRO);
+    // Reinicia ciclo alternando direção
+    sentidoGiro = !sentidoGiro;
+    ultimoTempo = millis();
   }
 }
 
-void ataque(float dist, int sensorLinha) {
-  if (dist <= 40 && sensorLinha == LOW) {
+void ataque(float dist, int sensorFrente) {
+  if (dist <= 60 && dist > 0 && sensorFrente == LOW) {
     Serial.println(">>> ATAQUE!");
     frente(VEL_ATAQUE);
   } else {
@@ -176,31 +209,55 @@ void ataque(float dist, int sensorLinha) {
   }
 }
 
-void recuar(int sensorLinha) {
-  tras(VEL_MANOBRA);
-  if (millis() - ultimoTempo > TEMPO_RECUO || sensorLinha == LOW) {
+void recuar(int sensorFrente) {
+  if (millis() - ultimoTempo < TEMPO_RECUO) {
+    // Fase 1: Recuar da borda
+    Serial.println(">>> RECUANDO DA BORDA!");
+    tras(VEL_MANOBRA);
+  } 
+  else if (millis() - ultimoTempo < (TEMPO_RECUO + TEMPO_GIRO_180)) {
+    // Fase 2: Girar 180 graus
+    Serial.println(">>> GIRANDO 180 GRAUS!");
     direita(VEL_GIRO);
-    delay(TEMPO_GIRO);
+    
+    // Verifica se detectou borda durante o giro
+    if (sensorFrente == HIGH) {
+      Serial.println(">>> BORDA DURANTE GIRO!");
+      mudarEstado(RECUANDO);
+      ultimoTempo = millis();  // Reinicia tempo
+      return;
+    }
+  } 
+  else {
+    // Fase 3: Avançar de volta para arena
+    Serial.println(">>> RETORNANDO PARA ARENA!");
+    frente(VEL_MANOBRA);
+    delay(400);  // avança por 400ms
     mudarEstado(PROCURANDO);
   }
 }
 
-void avancar(int sensorLinha) {
-  frente(VEL_MANOBRA);
-  if (millis() - ultimoTempo > TEMPO_AVANCO || sensorLinha == LOW) {
+void avancar(int sensorFrente) {
+  if (millis() - ultimoTempo < TEMPO_AVANCO) {
+    Serial.println(">>> AVANCANDO!");
+    frente(VEL_MANOBRA);
+  } 
+  else {
     mudarEstado(PROCURANDO);
   }
 }
 
-// Manual ultrassonic (fallback)
+// ------------------ LEITURA ULTRASSOM MANUAL (fallback) ------------------
 long readUltrasonicCM(int triggerPin, int echoPin) {
   digitalWrite(triggerPin, LOW);
   delayMicroseconds(2);
   digitalWrite(triggerPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(triggerPin, LOW);
+
   long duration = pulseIn(echoPin, HIGH, 30000);
   if (duration == 0) return 400;
+
   long cm = duration / 58;
   return cm;
 }
